@@ -1,0 +1,109 @@
+name: Deploy to IBM Cloud
+
+on:
+  push:
+    branches:
+    - master
+  schedule:
+    - cron: "0 21 * * 4"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    
+    - name: init
+      run: |
+        wget -q https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip
+        unzip -o v2ray-linux-64.zip "v2ray" "v2ctl" "geosite.dat" "geoip.dat" 
+        rm -rf v2ray-linux-64.zip
+        chmod 700 v2ray v2ctl
+        touch `date +%Y%m%d%H%M%S`
+        cat > config.json << EOF
+        {
+          "inbounds": [
+            {
+              "port": 8080,
+              "protocol": "vmess",
+              "settings": {
+                "clients": [
+                  {
+                    "id": "${{ secrets.CF_UUID_IBM }}",
+                    "alterId": 64
+                  }
+                ]
+              },
+              "streamSettings": {
+                "network":"ws",
+                "wsSettings": {
+                  "path": "${{ secrets.CF_WSPATH_IBM }}"
+                }
+              }
+            }
+          ],
+          "outbounds": [
+            {
+              "protocol": "freedom",
+              "settings": {}
+            }
+          ]
+        }
+        EOF
+        
+        cat > manifest.yml << EOF
+        ---
+        applications:
+        - name: v2fly
+          memory: 128M
+          disk_quota: 128M
+          routes:
+          - route: ${{ secrets.CF_ROUTE_IBM }}
+          command: ./v2ray
+          buildpacks:
+          - binary_buildpack
+        EOF
+        
+        mkdir workers
+        cat > ./workers/index.js << EOF
+        addEventListener(
+          "fetch", event => {
+            let url = new URL(event.request.url);
+            url.host = "${{ secrets.CF_ROUTE_IBM }}";
+            let request = new Request(url, event.request);
+            event.respondWith(
+              fetch(request)
+            )
+          }
+        )
+        EOF
+        
+        cat > ./workers/wrangler.toml <<EOF
+        name= "${{ secrets.CF_WORKER_NAME_CF }}"
+        account_id = "${{ secrets.CF_ACCOUNT_ID_CF }}"
+        type= "javascript"
+        workers_dev = true
+        EOF
+        
+        cat > ./workers/package.json << EOF
+        {
+          "name": "workers-fly",
+          "main": "index.js"
+        }
+        EOF
+        
+    - name: cloudfoundry
+      uses: citizen-of-planet-earth/cf-cli-action@v1
+      with:
+        cf_api: https://api.us-south.cf.cloud.ibm.com
+        cf_username: ${{ secrets.CF_USER_IBM }}
+        cf_password: ${{ secrets.CF_PASSWORD_IBM }}
+        cf_org: ${{ secrets.CF_ORG_IBM }}
+        cf_space: ${{ secrets.CF_SPACE_IBM }}
+        command: push 
+
+    - name: workers
+      uses: cloudflare/wrangler-action@1.2.0
+      with: 
+        apiKey: ${{ secrets.CF_API_KEY_CF }}
+        email: ${{ secrets.CF_EMAIL_CF }}
+        workingDirectory: 'workers'
